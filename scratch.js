@@ -119,7 +119,7 @@ function CompoundCircleNodeModel() {
   this.azimuth = DEFAULTS.AZIMUTH;
   this.radius = DEFAULTS.RADIUS;
   this.speed = DEFAULTS.SPEED;
-  this.pos = new Point(0.1, 0.0);
+  this.pos = vec2.fromValues(0.1, 0.0);
 }
 
 extend(Node, CompoundCircleNodeModel);
@@ -134,7 +134,7 @@ CompoundCircleNodeModel.prototype.update = function(timeDelta) {
 CompoundCircleNodeModel.prototype.updatePosition = function() {
   var x = Math.cos(this.azimuth) * this.radius;
   var y = Math.sin(this.azimuth) * this.radius;
-  this.pos.set(x, y);
+  vec2.set(this.pos, x, y);
 }
 
 // ----------------------------
@@ -143,8 +143,7 @@ CompoundCircleNodeModel.prototype.updatePosition = function() {
 
 function CompoundCircleSystemModel(numNodes) {
   DoublyLinkedList.call(this);
-  this.origin = new CompoundCircleNodeModel();
-  this.origin.pos.set(0.0, 0.0);
+  this.origin = vec2.create();
   // Add Nodes
   for (var i=0; i<numNodes; ++i) {
     node = new CompoundCircleNodeModel();
@@ -163,20 +162,6 @@ CompoundCircleSystemModel.prototype.update = function(timeDelta) {
 // =============================================================================
 // View
 // =============================================================================
-
-// -------------------------------
-// Geometry
-// -------------------------------
-function Point(x, y) {
-  this.x = x;
-  this.y = y;
-}
-
-Point.prototype.set = function(x, y) {
-  this.x = x;
-  this.y = y;
-}
-
 
 // -------------------------------
 // WebGL Utilities
@@ -287,11 +272,29 @@ LineRenderer.prototype.setup = function() {
 LineRenderer.prototype.draw = function(p0, p1) {
   const gl = this.gl;
   gl.useProgram(this.shader.program);
+  // Create a vector to represent this line
+  const line = vec2.create();
+  vec2.sub(line, p1, p0);
+  // Scale
+  const length = vec2.length(line);
+  const S = mat4.create();
+  mat4.fromScaling(S, vec3.fromValues(length, length, length));
+  // Rotate
+  const theta = Math.atan2(line[1], line[0]);
+  const R = mat4.create();
+  mat4.fromRotation(R, theta, [0.0, 0.0, 1.0]);
+  // Translate
+  const T = mat4.create();
+  mat4.fromTranslation(T, [p0[0], p0[1], 0.0]);
+  // Create Model Matrix
   const modelMatrix = mat4.create();
-  mat4.translate(modelMatrix, modelMatrix, [0.5, 0.5, 0.0])
-  gl.uniformMatrix4v(
+  mat4.multiply(modelMatrix, R, S);
+  mat4.multiply(modelMatrix, T, modelMatrix);
+  // Send Uniforms
+  gl.uniformMatrix4fv(
     this.shader.uniformLocations.modelMatrix, false, modelMatrix
   );
+  // Draw
   gl.drawArrays(gl.LINES, 0, 2);
 }
 
@@ -365,7 +368,7 @@ PointRenderer.prototype.draw = function(p) {
   gl.useProgram(this.shader.program);
   gl.uniform1f(this.shader.uniformLocations.pointSize, 10.0);
   const modelMatrix = mat4.create();
-  mat4.translate(modelMatrix, modelMatrix, [p.x, p.y, 0.0])
+  mat4.translate(modelMatrix, modelMatrix, [p[0], p[1], 0.0])
   gl.uniformMatrix4fv(
     this.shader.uniformLocations.modelMatrix, false, modelMatrix
   );
@@ -409,24 +412,20 @@ CompoundCircleSystemRenderer.prototype.setupPointRenderer = function() {
 
 CompoundCircleSystemRenderer.prototype.draw = function(compoundCircleSystem) {
 
-  // this.drawLines(compoundCircleSystem);
+  this.drawLines(compoundCircleSystem);
   this.drawPoints(compoundCircleSystem);
 
 }
 
 CompoundCircleSystemRenderer.prototype.drawPoints = function(compoundCircleSystem) {
-  var originStart = compoundCircleSystem.origin.pos;
-  var origin = originStart;
-  // TODO: This code is updating the reference to origin and the visualizer
-  //       quickly shoots off-screen. Good starting point for tomorrow.
-  console.log(origin);
+  var origin = vec2.clone(compoundCircleSystem.origin);
   for (var i=0; i<compoundCircleSystem.length; ++i) {
     var node = compoundCircleSystem.itemAt(i);
-    this.drawPoint(new Point(origin.x + node.pos.x, origin.y + node.pos.y));
-    origin.x += node.pos.x;
-    origin.y += node.pos.y;
+    var drawAt = vec2.create();
+    vec2.add(drawAt, origin, node.pos);
+    this.drawPoint(drawAt);
+    origin = drawAt;
   }
-  origin = originStart;
 
 }
 
@@ -438,19 +437,19 @@ CompoundCircleSystemRenderer.prototype.drawPoint = function(pos) {
 
 CompoundCircleSystemRenderer.prototype.drawLines = function(compoundCircleSystem) {
 
-  prev = compoundCircleSystem.origin;
-  for (var i=1; i<compoundCircleSystem.length; ++i) {
-    var next = compoundCircleSystem.itemAt(i);
-    this.drawLine(prev, next);
-    prev = next;
+  var p0 = vec2.clone(compoundCircleSystem.origin);
+  for (var i=0; i<compoundCircleSystem.length; ++i) {
+    var node = compoundCircleSystem.itemAt(i);
+    var p1 = vec2.create();
+    vec2.add(p1, p0, node.pos);
+    this.drawLine(p0, p1);
+    vec2.add(p0, p0, node.pos);
   }
 
 }
 
-CompoundCircleSystemRenderer.prototype.drawLine = function(node0, node1) {
+CompoundCircleSystemRenderer.prototype.drawLine = function(p0, p1) {
 
-  p0 = node0.pos;
-  p1 = node1.pos;
   this.lineRenderer.draw(p0, p1);
 
 }
@@ -459,13 +458,14 @@ CompoundCircleSystemRenderer.prototype.drawLine = function(node0, node1) {
 // MAIN
 // #############################################################################
 
-var numNodes = 5;
+var numNodes = 13;
 var visualizerModel = new CompoundCircleSystemModel(numNodes);
 
 const canvas = document.querySelector("#glCanvas");
 const gl = initWebGl(canvas);
 
 visualizerRenderer = new CompoundCircleSystemRenderer(gl);
+lineRenderer = new LineRenderer(gl);
 
 var then = 0;
 function render(now) {
@@ -476,7 +476,8 @@ function render(now) {
   then = now;
   visualizerModel.update(deltaTime);
   visualizerRenderer.draw(visualizerModel);
-
+  // lineRenderer.draw(vec2.fromValues(0.0, 0.5), vec2.fromValues(1.0, 0.0));
+  // lineRenderer.draw(vec2.fromValues(0.0, 0.0), vec2.fromValues(-0.2, -0.2));
   requestAnimationFrame(render);
 }
 requestAnimationFrame(render);
